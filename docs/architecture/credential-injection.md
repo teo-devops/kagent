@@ -1,5 +1,10 @@
 # Runtime credential injection
 
+This page describes implemented behavior. The
+[ScheduledRun and caller identity decision](scheduled-runs-and-caller-identity.md)
+records the proposed shared authentication API and service-account-backed
+scheduled invocations; those changes are not implemented yet.
+
 Kagent requires Substrate **v0.7.0-alpha1**. The runtime compiler turns
 ModelConfig API keys and Secret-backed RemoteMCPServer headers into pinned
 destination-scoped bindings. Independently, EgressPolicy admission supplies

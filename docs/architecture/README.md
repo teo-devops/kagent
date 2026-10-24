@@ -119,6 +119,12 @@ cleanup. Session lifecycle workers independently pause/suspend idle Actors.
 The documents describe implemented behavior. Full cross-Session delegation
 and Dedicated agents remain deferred.
 
+## Decisions awaiting implementation
+
+- [ScheduledRun and caller identity](scheduled-runs-and-caller-identity.md):
+  CRD schedule configuration, shared authentication configuration, and human or
+  machine token passthrough using kagent's service account for scheduled calls.
+
 ## Current boundaries
 
 Implemented end to end: kagent, Codex, Claude, and BYO compilation; ate-api

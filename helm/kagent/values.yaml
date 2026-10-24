@@ -156,6 +156,10 @@ config:
   server:
     auth:
       mode: insecure
+      serviceAccount:
+        authority: kubernetes
+        audience: kagent-invocation
+        tokenFile: /run/kagent-invocation/token
     grpcReflection: false
   database:
     # Role each login assumes after connecting. Set distinct roles for each install sharing a database.

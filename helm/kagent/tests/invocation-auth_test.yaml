@@ -1,0 +1,60 @@
+suite: invocation service-account authentication
+templates:
+  - controller-deployment.yaml
+  - controller-configmap.yaml
+  - rbac/invocation-auth.yaml
+tests:
+  - it: projects a short-lived token for the invocation audience
+    template: controller-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: invocation-token
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: kagent-invocation
+                    expirationSeconds: 3600
+                    path: token
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: invocation-token
+            mountPath: /run/kagent-invocation
+            readOnly: true
+  - it: keeps the configured projection filename and audience
+    template: controller-deployment.yaml
+    set:
+      config.server.auth.serviceAccount.audience: custom-invocation
+      config.server.auth.serviceAccount.tokenFile: /run/custom/bearer
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: invocation-token
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: custom-invocation
+                    expirationSeconds: 3600
+                    path: bearer
+  - it: grants TokenReview independently of secure metrics
+    template: rbac/invocation-auth.yaml
+    set:
+      controller.metrics.enabled: false
+      controller.serviceAccount.name: scheduler
+    asserts:
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: rules
+          value:
+            - apiGroups: [authentication.k8s.io]
+              resources: [tokenreviews]
+              verbs: [create]
+        documentIndex: 0
+      - equal:
+          path: subjects[0].name
+          value: scheduler
+        documentIndex: 1

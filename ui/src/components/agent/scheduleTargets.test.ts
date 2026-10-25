@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { create } from "@bufbuild/protobuf";
-import { ScheduledRunSchema } from "@/generated/kagent/api/v1/scheduled_runs_pb";
+import type { ScheduledRun } from "@/api/domain/scheduledRuns";
 import { schedulesFor } from "./scheduleTargets";
 
 describe("schedulesFor", () => {
   it("matches only the exact Agent namespace and name", () => {
-    const mine = create(ScheduledRunSchema, {id:"mine", agent:{namespace:"team", name:"assistant"}});
-    const otherAgent = create(ScheduledRunSchema, {id:"other", agent:{namespace:"team", name:"other"}});
-    const otherNamespace = create(ScheduledRunSchema, {id:"elsewhere", agent:{namespace:"elsewhere", name:"assistant"}});
-    const absent = create(ScheduledRunSchema, {id:"absent"});
+    const mine = { metadata: { name: "mine", namespace: "team" }, spec: { agentRef: { name: "assistant" }, prompt: "Report", schedule: "* * * * *" } } satisfies ScheduledRun;
+    const otherAgent = { metadata: { name: "other", namespace: "team" }, spec: { agentRef: { name: "other" }, prompt: "Report", schedule: "* * * * *" } } satisfies ScheduledRun;
+    const otherNamespace = { metadata: { name: "elsewhere", namespace: "elsewhere" }, spec: { agentRef: { name: "assistant" }, prompt: "Report", schedule: "* * * * *" } } satisfies ScheduledRun;
+    const absent: ScheduledRun = { metadata: { name: "absent" }, spec: { agentRef: { name: "report" }, prompt: "Report", schedule: "* * * * *" } };
     expect(schedulesFor([mine,otherAgent,otherNamespace,absent], {namespace:"team",name:"assistant"})).toEqual([mine]);
   });
 });

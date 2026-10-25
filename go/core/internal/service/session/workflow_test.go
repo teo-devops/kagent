@@ -331,7 +331,7 @@ func lifecycleForkFixture(t *testing.T, store *lifecycleTestStore, actors *lifec
 	_, err = store.FinalizeSessionCheckpoint(t.Context(), checkpoint.Id, "tag-uid", "s3://snapshots/snapshot-1", "")
 	require.NoError(t, err)
 	requestID := uuid.NewString()
-	fork, _, err := store.ForkSession(t.Context(), checkpoint.Id, source.Creator, requestID, uuid.NewString())
+	fork, _, err := store.ForkSession(t.Context(), checkpoint.Id, source.Creator, source.Creator, requestID, uuid.NewString())
 	require.NoError(t, err)
 	// An ordinary Create must not reuse a fork request ID, even for the same pair.
 	_, _, err = store.CreateSession(t.Context(), &apiv1.Session{Id: uuid.NewString(), Creator: source.Creator, Agent: source.Agent, Name: fork.Name}, requestID)

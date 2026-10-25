@@ -298,7 +298,16 @@ message SandboxConfig {
   }];
 }
 
+// Downstream credential, independently scoped from server authentication.
+message ProjectedServiceAccountCredential {
+  string audience = 1 [(buf.validate.field).string.min_len = 1];
+  string token_file = 2 [(buf.validate.field).string.min_len = 1];
+  // Requested Kubernetes projection TTL. The issued token's expiry is authoritative.
+  int64 expiration_seconds = 3 [(buf.validate.field).int64.gte = 600];
+}
+
 message ScheduledRunsConfig {
+  ProjectedServiceAccountCredential outbound_credential = 3;
   google.protobuf.Duration poll_interval = 1 [(buf.validate.field).duration = {
     gt: {}
     lte: {seconds: 9223372036}

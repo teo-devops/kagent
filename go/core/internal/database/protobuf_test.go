@@ -189,7 +189,7 @@ func TestProtobufPersistenceLifecycle(t *testing.T) {
 	require.Equal(t, checkpointRequest.ProtoReflect().GetUnknown(), checkpoint.ProtoReflect().GetUnknown())
 	_, err = client.GetSessionCheckpoint(ctx, checkpoint.Id, "mallory")
 	require.ErrorIs(t, err, ErrNotFound)
-	fork, created, err := client.ForkSession(ctx, checkpoint.Id, "alice", "fork", uuid.NewString())
+	fork, created, err := client.ForkSession(ctx, checkpoint.Id, "alice", "alice", "fork", uuid.NewString())
 	require.NoError(t, err)
 	require.True(t, created)
 	tasks, total, err := client.ListSessionTasks(ctx, fork.Id, "", a2a.TaskStateUnspecified, nil, 10, nil)

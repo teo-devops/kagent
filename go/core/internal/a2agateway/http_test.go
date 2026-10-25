@@ -189,7 +189,7 @@ func TestGatewayMissingConversationAcrossTransports(t *testing.T) {
 				require.Equal(t, 1, events)
 				require.Nil(t, dialer.session, "unavailable conversations must not reach the runtime")
 				require.Zero(t, store.reserveCalls)
-				require.False(t, store.unscoped, "session lookup must retain ownership filtering")
+				require.Equal(t, errors.Is(test.storeErr, database.ErrNotFound), store.unscoped, "only missing creator-owned Sessions may fall back to scheduled resource authorization")
 			})
 		}
 	}

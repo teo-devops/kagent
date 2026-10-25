@@ -25,13 +25,15 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1"
+	"github.com/kagent-dev/kagent/go/api/v1alpha3"
 )
 
 func TestScheduledRunCronAndManualExecution(t *testing.T) {
@@ -43,7 +45,7 @@ func TestScheduledRunCronAndManualExecution(t *testing.T) {
 		f := newScheduledFixture(t, harness, target, startInteractionMock(t), false, 2*time.Minute)
 		var first *apiv1.ScheduledRunExecution
 		require.NoError(t, wait.PollUntilContextTimeout(f.ctx, time.Second, 90*time.Second, true, func(ctx context.Context) (bool, error) {
-			result, err := f.schedules.ListScheduledRunExecutions(ctx, &apiv1.ListScheduledRunExecutionsRequest{ScheduledRunId: f.schedule.GetId()})
+			result, err := f.schedules.ListScheduledRunExecutions(ctx, &apiv1.ListScheduledRunExecutionsRequest{ScheduledRunId: string(f.schedule.UID)})
 			if err != nil {
 				return false, err
 			}
@@ -54,17 +56,15 @@ func TestScheduledRunCronAndManualExecution(t *testing.T) {
 			return true, nil
 		}), "wait for cron firing")
 		require.NotNil(t, first.GetScheduledTime())
-		require.True(t, first.GetScheduledTime().AsTime().Equal(f.schedule.GetNextExecutionTime().AsTime()))
-		paused := proto.Clone(f.schedule.GetConfig()).(*apiv1.ScheduledRunConfig)
-		paused.Paused = true
-		updated, err := f.schedules.UpdateScheduledRun(f.ctx, &apiv1.UpdateScheduledRunRequest{ScheduledRunId: f.schedule.GetId(), Etag: f.schedule.GetEtag(), Config: paused})
-		require.NoError(t, err)
-		require.Nil(t, updated.GetScheduledRun().GetNextExecutionTime())
+		require.NoError(t, f.kube.Get(f.ctx, ctrlclient.ObjectKeyFromObject(f.schedule), f.schedule))
+		f.schedule.Spec.Paused = new(true)
+		require.NoError(t, f.kube.Update(f.ctx, f.schedule))
+		f.waitReconciled(t)
 		first = f.waitExecution(t, first.GetId(), apiv1.ScheduledRunExecutionState_SCHEDULED_RUN_EXECUTION_STATE_SUCCEEDED)
 		f.assertCompletedTask(t, first)
 
 		// A manual trigger works while paused; retrying its request ID is one firing.
-		request := &apiv1.TriggerScheduledRunRequest{ScheduledRunId: f.schedule.GetId(), RequestId: uuid.NewString()}
+		request := &apiv1.TriggerScheduledRunRequest{ScheduledRunId: string(f.schedule.UID), RequestId: uuid.NewString()}
 		manual, err := f.schedules.TriggerScheduledRun(f.ctx, request)
 		require.NoError(t, err)
 		retried, err := f.schedules.TriggerScheduledRun(f.ctx, request)
@@ -75,14 +75,14 @@ func TestScheduledRunCronAndManualExecution(t *testing.T) {
 		f.assertCompletedTask(t, second)
 
 		// Continuing the conversation does not replace the original execution's task.
-		conversation := &interactionFixture{ctx: f.ctx, client: f.tasks, sessions: f.sessions, sessionID: second.GetSessionId(), contextID: second.GetSessionId(), tenant: f.schedule.GetAgent().GetNamespace() + "/" + f.schedule.GetAgent().GetName()}
+		conversation := &interactionFixture{ctx: f.ctx, client: f.tasks, sessions: f.sessions, sessionID: second.GetSessionId(), contextID: second.GetSessionId(), tenant: f.schedule.Namespace + "/" + f.schedule.Spec.AgentRef.Name}
 		_, _, continued := conversation.send(t, "What is 2+2?")
 		require.NotEqual(t, second.GetTaskId(), string(continued.ID))
 		retained, err := f.schedules.GetScheduledRunExecution(f.ctx, &apiv1.GetScheduledRunExecutionRequest{ExecutionId: second.GetId()})
 		require.NoError(t, err)
 		require.Equal(t, second.GetTaskId(), retained.GetExecution().GetTaskId())
 
-		_, err = f.schedules.DeleteScheduledRun(f.ctx, &apiv1.DeleteScheduledRunRequest{ScheduledRunId: f.schedule.GetId()})
+		err = f.kube.Delete(f.ctx, f.schedule)
 		require.NoError(t, err)
 		require.NoError(t, deleteIdleSession(f.ctx, f.sessions, first.GetSessionId()))
 		retained, err = f.schedules.GetScheduledRunExecution(f.ctx, &apiv1.GetScheduledRunExecutionRequest{ExecutionId: first.GetId()})
@@ -187,7 +187,8 @@ type scheduledFixture struct {
 	sessions  apiv1.SessionServiceClient
 	system    apiv1.SystemServiceClient
 	tasks     a2apb.A2AServiceClient
-	schedule  *apiv1.ScheduledRun
+	schedule  *v1alpha3.ScheduledRun
+	kube      ctrlclient.Client
 }
 
 func newScheduledFixture(t *testing.T, harness testHarness, target, modelURL string, paused bool, timeout time.Duration) *scheduledFixture {
@@ -196,23 +197,18 @@ func newScheduledFixture(t *testing.T, harness testHarness, target, modelURL str
 	conn := newControllerConn(t, target)
 	ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(t.Context(), "x-user-id", "e2e"), 5*time.Minute)
 	t.Cleanup(cancel)
-	f := &scheduledFixture{ctx: ctx, schedules: apiv1.NewScheduledRunServiceClient(conn), sessions: apiv1.NewSessionServiceClient(conn), system: apiv1.NewSystemServiceClient(conn), tasks: a2apb.NewA2AServiceClient(conn)}
-	created, err := f.schedules.CreateScheduledRun(ctx, &apiv1.CreateScheduledRunRequest{
-		RequestId: uuid.NewString(),
-		Agent:     &apiv1.ResourceReference{Namespace: "kagent", Name: template},
-		Config:    &apiv1.ScheduledRunConfig{Name: t.Name(), Schedule: "* * * * *", TimeZone: "UTC", Prompt: "What is 2+2?", Paused: paused, ExecutionTimeout: durationpb.New(timeout)},
-	})
-	require.NoError(t, err)
-	f.schedule = created.GetScheduledRun()
-	require.NotNil(t, f.schedule)
+	f := &scheduledFixture{ctx: ctx, schedules: apiv1.NewScheduledRunServiceClient(conn), sessions: apiv1.NewSessionServiceClient(conn), system: apiv1.NewSystemServiceClient(conn), tasks: a2apb.NewA2AServiceClient(conn), kube: interactionKubeClient(t)}
+	f.schedule = &v1alpha3.ScheduledRun{ObjectMeta: metav1.ObjectMeta{Namespace: "kagent", Name: "schedule-" + uuid.NewString()}, Spec: v1alpha3.ScheduledRunSpec{AgentRef: corev1.LocalObjectReference{Name: template}, Schedule: "* * * * *", TimeZone: new("UTC"), Prompt: "What is 2+2?", Paused: new(paused), ExecutionTimeout: &metav1.Duration{Duration: timeout}}}
+	require.NoError(t, f.kube.Create(ctx, f.schedule))
+	f.waitReconciled(t)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-user-id", "e2e"), 2*time.Minute)
 		defer cleanupCancel()
-		_, err := f.schedules.DeleteScheduledRun(cleanupCtx, &apiv1.DeleteScheduledRunRequest{ScheduledRunId: f.schedule.GetId()})
-		if err != nil {
+		err := f.kube.Delete(cleanupCtx, f.schedule)
+		if err != nil && !apierrors.IsNotFound(err) {
 			t.Errorf("delete schedule: %v", err)
 		}
-		executions, err := f.schedules.ListScheduledRunExecutions(cleanupCtx, &apiv1.ListScheduledRunExecutionsRequest{ScheduledRunId: f.schedule.GetId(), Page: &apiv1.PageRequest{Limit: 100}})
+		executions, err := f.schedules.ListScheduledRunExecutions(cleanupCtx, &apiv1.ListScheduledRunExecutionsRequest{ScheduledRunId: string(f.schedule.UID), Page: &apiv1.PageRequest{Limit: 100}})
 		if err != nil {
 			t.Errorf("list executions for cleanup: %v", err)
 			return
@@ -231,7 +227,7 @@ func newScheduledFixture(t *testing.T, harness testHarness, target, modelURL str
 
 func (f *scheduledFixture) trigger(t *testing.T) *apiv1.ScheduledRunExecution {
 	t.Helper()
-	result, err := f.schedules.TriggerScheduledRun(f.ctx, &apiv1.TriggerScheduledRunRequest{ScheduledRunId: f.schedule.GetId(), RequestId: uuid.NewString()})
+	result, err := f.schedules.TriggerScheduledRun(f.ctx, &apiv1.TriggerScheduledRunRequest{ScheduledRunId: string(f.schedule.UID), RequestId: uuid.NewString()})
 	require.NoError(t, err)
 	return result.GetExecution()
 }
@@ -266,7 +262,7 @@ func (f *scheduledFixture) waitExecution(t *testing.T, id string, want apiv1.Sch
 
 func (f *scheduledFixture) task(t *testing.T, execution *apiv1.ScheduledRunExecution) *a2atype.Task {
 	t.Helper()
-	request, err := pbconv.ToProtoGetTaskRequest(&a2atype.GetTaskRequest{Tenant: f.schedule.GetAgent().GetNamespace() + "/" + f.schedule.GetAgent().GetName(), ID: a2atype.TaskID(execution.GetTaskId())})
+	request, err := pbconv.ToProtoGetTaskRequest(&a2atype.GetTaskRequest{Tenant: f.schedule.Namespace + "/" + f.schedule.Spec.AgentRef.Name, ID: a2atype.TaskID(execution.GetTaskId())})
 	require.NoError(t, err)
 	result, err := f.tasks.GetTask(f.ctx, request)
 	require.NoError(t, err)
@@ -361,4 +357,15 @@ func startScheduledRecoveryModel(t *testing.T) (string, <-chan struct{}, func(),
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(func() { unblock(); server.Close() })
 	return reachableModelURL(t, server.URL), started, unblock, calls
+}
+
+func (f *scheduledFixture) waitReconciled(t *testing.T) {
+	t.Helper()
+	require.NoError(t, wait.PollUntilContextTimeout(f.ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
+		if err := f.kube.Get(ctx, ctrlclient.ObjectKeyFromObject(f.schedule), f.schedule); err != nil {
+			return false, err
+		}
+		ready := apimeta.FindStatusCondition(f.schedule.Status.Conditions, v1alpha3.ScheduledRunConditionReady)
+		return f.schedule.Status.ObservedGeneration == f.schedule.Generation && ready != nil && ready.Status == metav1.ConditionTrue, nil
+	}))
 }

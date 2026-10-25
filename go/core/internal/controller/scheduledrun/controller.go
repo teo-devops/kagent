@@ -39,13 +39,14 @@ type Controller struct {
 	workflow     controllerWorkflow
 	gateway      a2asrv.RequestHandler
 	pollInterval time.Duration
+	caller       auth.Session
 }
 
 var _ manager.LeaderElectionRunnable = (*Controller)(nil)
 var _ manager.Runnable = (*Controller)(nil)
 
-func NewController(store controllerStore, workflow controllerWorkflow, gateway a2asrv.RequestHandler, pollInterval time.Duration) *Controller {
-	return &Controller{store: store, workflow: workflow, gateway: gateway, pollInterval: pollInterval}
+func NewController(store controllerStore, workflow controllerWorkflow, gateway a2asrv.RequestHandler, caller auth.Session, pollInterval time.Duration) *Controller {
+	return &Controller{store: store, workflow: workflow, gateway: gateway, caller: caller, pollInterval: pollInterval}
 }
 
 func (*Controller) NeedLeaderElection() bool { return false }
@@ -54,7 +55,10 @@ func (c *Controller) Start(ctx context.Context) error {
 	if c.pollInterval <= 0 {
 		return fmt.Errorf("scheduled run execution poll interval must be positive")
 	}
-	ctx = auth.AuthSessionTo(ctx, auth.ControlPlaneSession{})
+	if c.caller == nil {
+		return fmt.Errorf("scheduler service-account authentication is not configured")
+	}
+	ctx = auth.AuthSessionTo(ctx, c.caller)
 	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
 	for {
@@ -100,6 +104,11 @@ func (c *Controller) tick(ctx context.Context) error {
 
 func (c *Controller) reconcile(ctx context.Context, leased database.LeasedScheduledRunExecution) error {
 	execution := leased.Execution
+	if c.caller == nil || c.caller.Principal().ID != execution.GetCreator() {
+		finishExecution(execution, apiv1.ScheduledRunExecutionState_SCHEDULED_RUN_EXECUTION_STATE_FAILED, "Scheduler identity changed or is unavailable")
+		return nil
+	}
+	ctx = auth.AuthSessionTo(ctx, c.caller)
 	expired := !time.Now().Before(execution.GetDeadline().AsTime())
 	if execution.GetSessionId() == "" {
 		if expired {

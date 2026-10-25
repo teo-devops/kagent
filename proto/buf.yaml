@@ -27,4 +27,7 @@ breaking:
   ignore:
     - ateapi.proto
     - api/ateapi/v1/ateapi.proto
+    # Pre-1.0 ScheduledRun CRD cutover replaces the configuration contract,
+    # including field numbers. Remove once the cutover is on the comparison branch.
+    - kagent/api/v1/scheduled_runs.proto
   ignore_unstable_packages: true

@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1"
 	"github.com/kagent-dev/kagent/go/core/internal/database"
 	"github.com/kagent-dev/kagent/go/core/internal/service/serviceerrors"
+	"github.com/kagent-dev/kagent/go/core/internal/service/sessionauth"
 	"github.com/kagent-dev/kagent/go/core/pkg/auth"
 )
 
@@ -166,12 +167,25 @@ func (s *Service) getAuthorized(ctx context.Context, id string, verb auth.Verb) 
 		session, err = s.store.GetSessionByID(ctx, id)
 	} else {
 		session, err = s.store.GetSession(ctx, id, creator)
+		if errors.Is(err, database.ErrNotFound) && !shared && authSession.Principal().RuntimeBinding == nil {
+			candidate, lookupErr := s.store.GetSessionByID(ctx, id)
+			if lookupErr == nil && candidate.GetScheduledRun() != nil {
+				session, err = candidate, nil
+			} else if lookupErr != nil && !errors.Is(lookupErr, database.ErrNotFound) {
+				err = lookupErr
+			}
+		}
 	}
 	if errors.Is(err, database.ErrNotFound) {
 		return nil, serviceerrors.NewNotFound("Session not found", err)
 	}
 	if err != nil {
 		return nil, serviceerrors.NewInternal("Failed to get Session", err)
+	}
+	if !shared && authSession.Principal().RuntimeBinding == nil {
+		if err := s.authorizeScheduled(ctx, verb, session); err != nil {
+			return nil, err
+		}
 	}
 	return session, nil
 }
@@ -184,11 +198,11 @@ func (s *Service) Rename(ctx context.Context, id, name string) (*apiv1.Session, 
 	if err != nil {
 		return nil, err
 	}
-	creator, err := s.authorize(ctx, auth.VerbUpdate, id)
+	existing, err := s.getAuthorized(ctx, id, auth.VerbUpdate)
 	if err != nil {
 		return nil, err
 	}
-	session, err := s.store.UpdateSessionName(ctx, id, creator, name)
+	session, err := s.store.UpdateSessionName(ctx, id, existing.Creator, name)
 	if errors.Is(err, database.ErrNotFound) {
 		return nil, serviceerrors.NewNotFound("Session not found", err)
 	}
@@ -244,6 +258,12 @@ func (s *Service) List(ctx context.Context, request ListRequest) (ListResult, er
 		}
 		for _, session := range sessions {
 			query.AfterID = session.Id
+			if err := s.authorizeScheduled(ctx, auth.VerbGet, session); err != nil {
+				if serviceerrors.IsCode(err, serviceerrors.CodePermissionDenied) {
+					continue
+				}
+				return ListResult{}, err
+			}
 			// Authorize before pagination. A denied Session must not consume a
 			// result slot or become the cursor exposed to the caller.
 			if _, err := s.authorize(ctx, auth.VerbGet, session.Id); err != nil {
@@ -499,4 +519,10 @@ func generateShareToken() (string, []byte, error) {
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	digest := sha256.Sum256([]byte(token))
 	return token, digest[:], nil
+}
+
+// authorizeScheduled keeps access to machine-created conversations independent
+// from schedule configuration. The reference comes from accepted execution data.
+func (s *Service) authorizeScheduled(ctx context.Context, verb auth.Verb, session *apiv1.Session) error {
+	return sessionauth.CheckScheduled(ctx, s.authorizer, verb, session.GetScheduledRun())
 }

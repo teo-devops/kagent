@@ -4,6 +4,29 @@ templates:
   - controller-configmap.yaml
   - rbac/invocation-auth.yaml
 tests:
+  - it: projects a separate downstream credential with the requested TTL
+    template: controller-deployment.yaml
+    set:
+      config.scheduledRuns.outboundCredential.audience: mcp.example
+      config.scheduledRuns.outboundCredential.tokenFile: /run/downstream/bearer
+      config.scheduledRuns.outboundCredential.expirationSeconds: 7200
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: outbound-invocation-token
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: mcp.example
+                    expirationSeconds: 7200
+                    path: bearer
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: outbound-invocation-token
+            mountPath: /run/downstream
+            readOnly: true
   - it: projects a short-lived token for the invocation audience
     template: controller-deployment.yaml
     asserts:

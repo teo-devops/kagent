@@ -1,3 +1,4 @@
+import type { ScheduledRun } from "../domain/scheduledRuns";
 import { RuntimeState, RuntimeOperation } from "@/generated/kagent/api/v1/runtime_pb";
 import { AgentService, type Agent as PbAgent } from "@/generated/kagent/api/v1/agents_pb";
 import type { Agent, AgentResource } from "../domain/agents";
@@ -1407,23 +1408,23 @@ export const defaultOperations: ApiOperations = {
   ...cluster,
   "scheduledRuns.list": async (input, options) => rpc("ListScheduledRuns", options.signal, async () => {
     const response = await serviceClient(ScheduledRunService).listScheduledRuns(input, call("scheduledRuns.list", options));
-    return { ...response, scheduledRuns: list(response.scheduledRuns) };
+    return { ...response, scheduledRuns: list(response.scheduledRuns).map(row => unwrap<ScheduledRun>(row.resource, "ListScheduledRuns", "ScheduledRun")) };
   }),
   "scheduledRuns.get": async (input, options) => rpc("GetScheduledRun", options.signal, async () => {
     const response = await serviceClient(ScheduledRunService).getScheduledRun(input, call("scheduledRuns.get", options));
-    return { ...response, scheduledRun: required(response.scheduledRun, "GetScheduledRun", "scheduledRun") };
+    return { ...response, scheduledRun: unwrap<ScheduledRun>(response.scheduledRun?.resource, "GetScheduledRun", "ScheduledRun") };
   }),
   "scheduledRuns.create": async (input, options) => rpc("CreateScheduledRun", options.signal, async () => {
-    const response = await serviceClient(ScheduledRunService).createScheduledRun(input, call("scheduledRuns.create", options));
-    return { ...response, scheduledRun: required(response.scheduledRun, "CreateScheduledRun", "scheduledRun") };
+    const response = await serviceClient(ScheduledRunService).createScheduledRun({ ref: input.ref, resource: wrap("ScheduledRun", input.resource) }, call("scheduledRuns.create", options));
+    return { ...response, scheduledRun: unwrap<ScheduledRun>(response.scheduledRun?.resource, "CreateScheduledRun", "ScheduledRun") };
   }),
   "scheduledRuns.update": async (input, options) => rpc("UpdateScheduledRun", options.signal, async () => {
-    const response = await serviceClient(ScheduledRunService).updateScheduledRun(input, call("scheduledRuns.update", options));
-    return { ...response, scheduledRun: required(response.scheduledRun, "UpdateScheduledRun", "scheduledRun") };
+    const response = await serviceClient(ScheduledRunService).updateScheduledRun({ ref: input.ref, resource: wrap("ScheduledRun", input.resource) }, call("scheduledRuns.update", options));
+    return { ...response, scheduledRun: unwrap<ScheduledRun>(response.scheduledRun?.resource, "UpdateScheduledRun", "ScheduledRun") };
   }),
   "scheduledRuns.delete": async (input, options) => rpc("DeleteScheduledRun", options.signal, async () => {
     const response = await serviceClient(ScheduledRunService).deleteScheduledRun(input, call("scheduledRuns.delete", options));
-    return { ...response, scheduledRun: required(response.scheduledRun, "DeleteScheduledRun", "scheduledRun") };
+    return response;
   }),
   "scheduledRuns.trigger": async (input, options) => rpc("TriggerScheduledRun", options.signal, async () => {
     const response = await serviceClient(ScheduledRunService).triggerScheduledRun(input, call("scheduledRuns.trigger", options));

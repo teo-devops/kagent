@@ -328,14 +328,22 @@ func Run(ctx context.Context, input *configv1.ControllerConfig, opts Options) er
 	}
 
 	authenticator, authorizer := opts.resolve()
+	var schedulerCaller auth.Session
 	if machine := cfg.GetServer().GetAuth().GetServiceAccount(); machine != nil {
 		reviewer, err := typedauth.NewForConfig(kubeConfig)
 		if err != nil {
 			return fmt.Errorf("create service-account verifier: %w", err)
 		}
-		authenticator, err = authimpl.NewServiceAccountProvider(authenticator, reviewer.TokenReviews(), machine.GetAuthority(), machine.GetAudience())
+		machineProvider, err := authimpl.NewServiceAccountProvider(authenticator, reviewer.TokenReviews(), machine.GetAuthority(), machine.GetAudience())
 		if err != nil {
 			return err
+		}
+		authenticator = machineProvider
+		if outbound := cfg.GetScheduledRuns().GetOutboundCredential(); outbound != nil {
+			schedulerCaller, err = machineProvider.ProjectedSession(ctx, machine.GetTokenFile(), outbound.GetTokenFile(), outbound.GetAudience())
+			if err != nil {
+				return fmt.Errorf("configure scheduler identity and outbound credential: %w", err)
+			}
 		}
 	}
 	authenticator = runtimeauth.NewProvider(authenticator, actorVerifier, store, cfg.GetSubstrate().GetActorJwtIssuer())
@@ -384,12 +392,17 @@ func Run(ctx context.Context, input *configv1.ControllerConfig, opts Options) er
 	}
 	gateway := a2agateway.New(interactions, gatewayDialer, cfg.GetGateway().GetPublicUrl())
 	schedules := scheduledrun.NewService(store, manager.GetClient(), authorizer)
-	if err := manager.Add(scheduledruncontroller.NewScheduler(store, cfg.GetScheduledRuns().GetPollInterval().AsDuration())); err != nil {
-		return fmt.Errorf("add scheduled run scheduler: %w", err)
+	if err := manager.Add(controller.NewScheduledRunReconciler(runtime.Collections.ScheduledRunReconciliations, store, manager.GetClient(), manager.GetAPIReader(), schedulerCaller)); err != nil {
+		return err
 	}
-	if err := manager.Add(scheduledruncontroller.NewController(store, sessionWorkflow,
-		gateway, cfg.GetScheduledRuns().GetExecutionInterval().AsDuration())); err != nil {
-		return fmt.Errorf("add scheduled run controller: %w", err)
+	if schedulerCaller != nil {
+		if err := manager.Add(scheduledruncontroller.NewScheduler(store, manager.GetAPIReader(), watchNamespaces, cfg.GetScheduledRuns().GetPollInterval().AsDuration())); err != nil {
+			return fmt.Errorf("add scheduled run scheduler: %w", err)
+		}
+		if err := manager.Add(scheduledruncontroller.NewController(store, sessionWorkflow,
+			gateway, schedulerCaller, cfg.GetScheduledRuns().GetExecutionInterval().AsDuration())); err != nil {
+			return fmt.Errorf("add scheduled run controller: %w", err)
+		}
 	}
 	sandboxTemplates := kubecrud.NewService(manager.GetClient(), authorizer, &kagentv1alpha3.SandboxTemplate{}, &kagentv1alpha3.SandboxTemplateList{}, kagentv1alpha3.SandboxTemplateKind)
 	guests, err := sandboxservice.NewGuestDialer(cfg.GetSubstrate().GetRouterUrl(), authenticator)

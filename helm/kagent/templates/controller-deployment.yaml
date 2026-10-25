@@ -78,6 +78,15 @@ spec:
               expirationSeconds: 3600
               path: {{ base .tokenFile | quote }}
       {{- end }}
+      {{- with .Values.config.scheduledRuns.outboundCredential }}
+      - name: outbound-invocation-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: {{ .audience | quote }}
+              expirationSeconds: {{ .expirationSeconds }}
+              path: {{ base .tokenFile | quote }}
+      {{- end }}
       {{- if .Values.database.postgres.clientCertificate.enabled }}
       - name: postgres-client-certificate
         projected:
@@ -205,6 +214,11 @@ spec:
           volumeMounts:
             {{- with .Values.config.server.auth.serviceAccount }}
             - name: invocation-token
+              mountPath: {{ dir .tokenFile | quote }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.config.scheduledRuns.outboundCredential }}
+            - name: outbound-invocation-token
               mountPath: {{ dir .tokenFile | quote }}
               readOnly: true
             {{- end }}

@@ -76,7 +76,7 @@ func (c *Client) CreateSession(ctx context.Context, request *apiv1.Session, requ
 
 	var row sessionRow
 	err = c.withTx(ctx, func(tx pgx.Tx) error {
-		row, err = insertSession(ctx, tx, request, requestID)
+		row, err = insertSession(ctx, tx, request, requestID, "")
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -105,7 +105,7 @@ func (c *Client) CreateSession(ctx context.Context, request *apiv1.Session, requ
 // a transaction so the history and session commit together. A missing prepared target
 // returns ErrNotFound; a duplicate creator/requestID returns pgx.ErrNoRows for the caller
 // to resolve.
-func insertSession(ctx context.Context, db pgx.Tx, request *apiv1.Session, requestID string) (sessionRow, error) {
+func insertSession(ctx context.Context, db pgx.Tx, request *apiv1.Session, requestID, agentUID string) (sessionRow, error) {
 	type preparedRevision struct {
 		Revision string
 		DBTime   time.Time
@@ -114,8 +114,8 @@ func insertSession(ctx context.Context, db pgx.Tx, request *apiv1.Session, reque
 		SELECT p.latest_successful_revision AS revision, clock_timestamp() AS db_time
 		FROM agent_definition p
 		WHERE p.namespace = $1 AND p.agent_name = $2 AND p.retired_at IS NULL
-		    AND p.latest_successful_revision IS NOT NULL
-	`, pgx.RowToStructByName[preparedRevision], request.GetAgent().GetNamespace(), request.GetAgent().GetName())
+		    AND p.latest_successful_revision IS NOT NULL AND ($3::text = '' OR p.agent_uid = $3)
+	`, pgx.RowToStructByName[preparedRevision], request.GetAgent().GetNamespace(), request.GetAgent().GetName(), agentUID)
 	if err != nil {
 		return sessionRow{}, fmt.Errorf("get latest prepared runtime revision: %w", notFoundOr(err))
 	}

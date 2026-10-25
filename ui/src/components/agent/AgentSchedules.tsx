@@ -1,3 +1,4 @@
+import { scheduleRouteID } from "@/api/domain/scheduledRuns";
 import { Alert, Button, Card, Skeleton, Tag, Typography } from "antd";
 import { useTheme } from "@emotion/react";
 import { Plus } from "lucide-react";
@@ -64,10 +65,10 @@ export function AgentSchedules({ agent }: { agent: ScheduledAgentRef }) {
         >
           {rows.map((schedule) => (
             <li
-              key={schedule.id}
-              data-testid={`agent-schedule-${schedule.id}`}
+              key={schedule.metadata.uid}
+              data-testid={`agent-schedule-${schedule.metadata.uid}`}
               onClick={rowClickHandler(() =>
-                void navigate(buildPath(paths.scheduledRun, { id: schedule.id })),
+                void navigate(buildPath(paths.scheduledRun, { id: scheduleRouteID(schedule) })),
               )}
               css={{
                 display: "flex",
@@ -92,16 +93,16 @@ export function AgentSchedules({ agent }: { agent: ScheduledAgentRef }) {
               }}
             >
               <Link
-                to={buildPath(paths.scheduledRun, { id: schedule.id })}
-                data-testid={`agent-schedule-link-${schedule.id}`}
+                to={buildPath(paths.scheduledRun, { id: scheduleRouteID(schedule) })}
+                data-testid={`agent-schedule-link-${schedule.metadata.uid}`}
                 css={linkInk(theme)}
               >
-                {schedule.config?.name || schedule.id}
+                {schedule.metadata.name}
               </Link>
               <Text css={{ color: theme.color.textMuted, fontSize: 12 }}>
-                {schedule.config ? scheduleDescription(schedule.config.schedule) : "—"}
+                {schedule.spec ? scheduleDescription(schedule.spec.schedule) : "—"}
               </Text>
-              {schedule.config?.paused ? (
+              {schedule.spec?.paused ? (
                 <Tag color="warning">Paused</Tag>
               ) : (
                 <Tag color="success">Active</Tag>

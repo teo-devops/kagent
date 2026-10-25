@@ -54,6 +54,15 @@ message Session {
   // Output only. A2A conversation ID, equal to this session's ID.
   // Forks receive a new conversation ID and new task IDs.
   string context_id = 14;
+  // Output only. Present for Sessions reserved by the scheduler. Resource
+  // access uses this immutable provenance, independently of caller credentials.
+  ScheduledRunProvenance scheduled_run = 16;
+}
+
+message ScheduledRunProvenance {
+  ResourceReference ref = 1;
+  string uid = 2;
+  string execution_id = 3;
 }
 
 message CreateSessionRequest {

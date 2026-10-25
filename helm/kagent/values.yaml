@@ -161,6 +161,13 @@ config:
         audience: kagent-invocation
         tokenFile: /run/kagent-invocation/token
     grpcReflection: false
+  scheduledRuns:
+    outboundCredential:
+      # Audience accepted by downstream services; must differ from server authentication.
+      audience: kagent-egress
+      tokenFile: /run/kagent-egress/token
+      # Requested TTL; each invocation is limited by the issued token's remaining lifetime.
+      expirationSeconds: 3600
   database:
     # Role each login assumes after connecting. Set distinct roles for each install sharing a database.
     # The owner applies migrations and is not used when skipMigrations is true.

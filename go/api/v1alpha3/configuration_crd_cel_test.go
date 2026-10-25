@@ -57,7 +57,7 @@ func TestConfigurationCRDValidation(t *testing.T) {
 				names = append(names, resource.Name)
 			}
 		}
-		require.ElementsMatch(t, []string{"agents", "agenttemplates", "egresspolicies", "harnesses", "modelconfigs", "modelproviderconfigs", "remotemcpservers", "sandboxtemplates"}, names)
+		require.ElementsMatch(t, []string{"agents", "agenttemplates", "egresspolicies", "harnesses", "modelconfigs", "modelproviderconfigs", "remotemcpservers", "sandboxtemplates", "scheduledruns"}, names)
 		_, err = discoveryClient.ServerResourcesForGroupVersion("kagent.dev/v1alpha3")
 		require.True(t, apierrors.IsNotFound(err), "the new CRDs must not publish the legacy group: %v", err)
 	})
@@ -71,6 +71,34 @@ func TestConfigurationCRDValidation(t *testing.T) {
 	ctx := context.Background()
 	const namespace = "configuration-crd-cel"
 	require.NoError(t, cl.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}))
+
+	t.Run("ScheduledRun validation and defaults", func(t *testing.T) {
+		valid := func() *ScheduledRun {
+			return &ScheduledRun{ObjectMeta: metav1.ObjectMeta{GenerateName: "schedule-", Namespace: namespace}, Spec: ScheduledRunSpec{AgentRef: corev1.LocalObjectReference{Name: "agent"}, Schedule: "0 9 * * 1-5", Prompt: "Summarize tickets"}}
+		}
+		resource := valid()
+		require.NoError(t, cl.Create(ctx, resource))
+		require.Equal(t, "UTC", *resource.Spec.TimeZone)
+		require.False(t, *resource.Spec.Paused)
+		require.Equal(t, 15*time.Minute, resource.Spec.ExecutionTimeout.Duration)
+		for _, tc := range []struct {
+			name   string
+			change func(*ScheduledRun)
+		}{
+			{"missing agent", func(r *ScheduledRun) { r.Spec.AgentRef.Name = "" }},
+			{"six fields", func(r *ScheduledRun) { r.Spec.Schedule = "0 0 9 * * *" }},
+			{"blank prompt", func(r *ScheduledRun) { r.Spec.Prompt = "   " }},
+			{"local timezone", func(r *ScheduledRun) { value := "Local"; r.Spec.TimeZone = &value }},
+			{"negative timeout", func(r *ScheduledRun) { r.Spec.ExecutionTimeout = &metav1.Duration{Duration: -time.Second} }},
+			{"zero timeout", func(r *ScheduledRun) { r.Spec.ExecutionTimeout = &metav1.Duration{} }},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				resource := valid()
+				tc.change(resource)
+				require.True(t, apierrors.IsInvalid(cl.Create(ctx, resource)))
+			})
+		}
+	})
 
 	t.Run("MCP timeout bounds", func(t *testing.T) {
 		for _, field := range []string{"timeout", "sseReadTimeout"} {

@@ -35,6 +35,16 @@ func (s *sessionAuthorizationStore) GetSession(_ context.Context, id, owner stri
 	return nil, database.ErrNotFound
 }
 
+func (s *sessionAuthorizationStore) GetSessionByID(_ context.Context, id string) (*apiv1.Session, error) {
+	s.reads.Add(1)
+	for _, session := range s.sessions {
+		if session.Id == id {
+			return session, nil
+		}
+	}
+	return nil, database.ErrNotFound
+}
+
 func (s *sessionAuthorizationStore) UpdateSessionName(ctx context.Context, id, owner, name string) (*apiv1.Session, error) {
 	session, err := s.GetSession(ctx, id, owner)
 	if err != nil {

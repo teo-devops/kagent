@@ -1,8 +1,8 @@
 # ScheduledRun and caller identity: design decision
 
-Decision recorded: 2026-10-24. The principal and service-account authentication
-foundation and shared credential header API are implemented. The ScheduledRun CRD
-sections describe the remaining dependent change.
+Decision implemented: 2026-10-25. This clean-install API replaces the earlier
+creator-owned schedule configuration. See [credential injection](credential-injection.md)
+for the runtime transport and operational limits.
 
 ## Decision
 
@@ -104,12 +104,36 @@ an opaque ID. Token rotation preserves the ID; deleting and recreating an SA
 changes it. Configure distinct authorities for distinct Kubernetes authentication
 sources sharing a store, and keep the authority stable across controller restarts.
 
-Helm projects a one-hour `kagent-invocation` token separately from the Kubernetes
-API credential and grants TokenReview access. Kubelet rotates the projection.
-The scheduler's credential source reads and verifies it on every use, rejects a
-changed SA UID, and returns errors without token material. External SA callers
+Helm projects separate inbound (`kagent-invocation`) and outbound (`kagent-egress`)
+tokens, in addition to the Kubernetes API credential, and grants TokenReview
+access. The scheduler authenticates its principal using the inbound token and
+exports only the outbound token. Both must identify the same SA UID. Equal
+audiences and outbound tokens also carrying the inbound audience are rejected;
+receiving services cannot replay the outbound token to authenticate to Kagent.
+Kubelet rotates the projections. The scheduler reads and verifies the outgoing
+token for each new invocation, rejects a changed SA UID, and returns errors
+without token material. External SA callers
 use the same verifier; their supplied credential is reverified before forwarding.
 Custom authentication providers retain their own forwarding contract.
+
+The requested downstream TTL is configurable in Helm:
+
+```yaml
+config:
+  scheduledRuns:
+    outboundCredential:
+      audience: kagent-egress
+      tokenFile: /run/kagent-egress/token
+      expirationSeconds: 3600
+```
+
+Kubernetes requires at least 600 seconds and may issue a different lifetime.
+The actual token expiry governs an invocation, which may start partway through
+a projected token's lifetime. Running tasks do not adopt rotated tokens; further
+credential-dependent calls fail after expiry. Downstream services must verify
+the outgoing audience and grant the intended authority. This separation applies
+to scheduler credentials; ordinary caller-token passthrough retains the caller's
+supplied token and its authority.
 
 Runtime Actors use their verified atespace and Actor UID as principal identity.
 Their Session binding carries the stored creator solely for data scoping, and
@@ -260,7 +284,7 @@ Use a short-lived, audience-scoped token for the service account, through a
 projected token or TokenRequest. Its receivers must accept the configured issuer
 and audience. Do not automatically distribute the default Kubernetes API token:
 it authenticates with the controller's Kubernetes permissions at the API server.
-Audience selection, renewal, and any exchange belong to platform authentication
+Audience selection, requested TTL, and any exchange belong to platform authentication
 configuration, not a serviceAccountName field on Agent or ScheduledRun.
 
 The authentication boundary must verify Kubernetes credentials, for example
@@ -269,12 +293,11 @@ issuer/JWKS verifier. Reading `sub` from an unverified JWT is insufficient.
 Trusted internal scheduler calls can use the same principal/credential contract
 without requiring an HTTP loopback request.
 
-Bind a refreshable credential source to execution rather than persisting a
-bearer token in the ScheduledRun, Session, execution payload, revision, or audit
-record. Read projected token rotation or renew TokenRequests as required. A
-running execution must not remain stuck with the token captured when its first
-request started. Refresh must retain the intended subject and audience, and must
-not redispatch an already claimed A2A task.
+Capture the verified outbound token for each invocation in memory. Never persist
+it in the ScheduledRun, Session, execution payload, revision, or audit record.
+An invocation relying on passthrough is limited by that token's remaining
+lifetime. New invocations can use the current projection; expiration does not
+renew or redispatch an already claimed A2A task.
 
 Creating or modifying a schedule authorizes unattended use of this machine
 authority through its configured integrations. Apply configuration and invocation
@@ -288,7 +311,7 @@ invocation's passthrough credential.
 
 ## ScheduledRun and durable Session context
 
-The proposed CRD contains desired invocation configuration:
+The CRD contains desired invocation configuration:
 
 ```yaml
 apiVersion: api.kagent.dev/v1alpha3
@@ -306,8 +329,7 @@ spec:
   executionTimeout: 15m
 ```
 
-Start with same-namespace Agent references. Status reports observed generation,
-conditions, and bounded scheduling summaries. Kubernetes owns desired schedule
+Start with same-namespace Agent references. Status reports observed generation and a Ready condition. Kubernetes owns desired schedule
 configuration; PostgreSQL retains execution reservations, leases, Session links,
 and history. A2A owns task identities, state, and transcripts.
 
@@ -340,55 +362,81 @@ using the same SA and Agent share memory. As with existing user memory, recreati
 an Agent under the same name retains access to that principal's memory. Changing
 to UID-based partitions would require a separate retention/migration contract.
 
-The working deletion semantics are that schedule deletion stops new reservations
-once reconciled, while accepted executions and retained history survive. Define
-this asynchronous boundary in the CRD contract. Recreated resource names must not
+Cron reservations read the live ScheduledRun through an uncached Kubernetes
+reader and require its UID and generation to match the managed projection.
+Schedules outside watched namespaces cannot reserve cron work. Missing, replaced,
+or deleting sources retire their projections; transient API errors skip the
+reservation without retiring the source. The store rechecks eligibility and
+generation transactionally. A finalizer normally retires the projection before
+deletion completes, while live-source checks cover forced or offline deletion.
+Accepted executions and retained history survive. Accepted execution inputs
+and Agent UID remain immutable; a replacement Agent cannot adopt old work. Recreated resource names must not
 adopt state from old UIDs.
 
 ## Runtime and credential boundary
 
-Compilation resolves the shared credential header configuration into explicit
-destination bindings. Credential acquisition and propagation use the verified
-invocation context. The gateway remains the preferred place to inject credentials
-without exposing values to guest runtimes. A common API must not imply that every
-harness already implements these paths.
+Compilation resolves shared credential headers into pinned destination bindings;
+EgressPolicy supplies additional live grants. Go and Python model/MCP transports
+use the authenticated caller token held in invocation-local context, independently
+of the Session creator. No caller token is stored in Kubernetes objects, revisions,
+Sessions, execution records, native process configuration, or a controller registry.
+An invocation keeps its original token; later SA rotation affects only new
+invocations. Token expiry is enforced by the destination, without renewal or
+automatic redispatch.
 
-Invocation credentials cannot be cached solely by Session creator, Agent, or
-origin. A later invocation can have a different caller. Credential handles, MCP
-connections, background streams, and paused/resumed work must preserve the
-originating invocation's authority rather than inherit the most recent token.
-Checkpoint/fork operations do not create permission to reuse a caller credential.
-How that binding is carried through the gateway and across restarts remains an
-implementation decision.
+Live header policy is fetched separately through the Actor-authenticated,
+stateless `GET /runtime/egress` endpoint. It returns configuration and injection
+placeholders, never caller credentials. Secret injection remains at the Substrate gateway. Claude and Codex caller-token passthrough is unsupported;
+their compilers reject integration bindings that require it.
 
-Current Substrate injection replaces a header only when the client supplies it.
-Existing placeholders can continue to satisfy that contract where supported.
-Adding or overwriting a missing policy-managed header requires a Substrate change;
-do not claim that behavior exists today. The shared credential header API alone does
-not solve invocation-scoped credential routing or token renewal.
+See [credential injection](credential-injection.md) for transport requirements,
+expiry, and discovery.
 
-Authenticated tool discovery also needs an explicit caller context. A global
-discovery result cannot assume all human and machine subjects see the same tools.
-Controller-originated requests must not accidentally substitute the controller
-credential for an unrelated invocation's credential.
+## Configuration, execution, and access
 
-## Current implementation and affected boundaries
+Kubernetes is the configuration API. ScheduledRunService CRUD wraps the actual
+resource through the same `ResourceReference` + `StructuredObject` envelope used
+by other CRDs, preserving UID and resourceVersion preconditions. The CRD spec is
+the only configuration schema; there is no separate protobuf configuration model.
+The scheduler stores a private JSON snapshot of that spec with the resource
+version and resolved Agent UID. Indexed database columns own identity and timing.
+This internal Go projection is written only by reconciliation and fenced by
+UID/generation. Execution records and trigger/history RPCs remain protobuf APIs.
+Status becomes Ready after synchronization. Invalid cron/time zones, a missing
+Agent, or absent scheduler authentication disable new reservations and report a
+condition; correcting the resource or Agent retries reconciliation. A disabled
+projection rejects new manual executions as well as cron occurrences; pausing a
+valid schedule only stops cron occurrences. Accepted requests remain replayable.
 
-The following are current limitations, not implemented parts of this decision:
+Manual triggers identify the schedule UID and reserve only the exact generation
+whose target Agent the caller was authorized to invoke. A concurrent edit or
+reconciliation requires a fresh authorization before a new reservation.
+Accepted inputs include the prompt, deadline, Agent UID, schedule UID/generation,
+and initiating principal. Cron occurrences deduplicate by UID/time and manual
+triggers by UID/request ID. History uses the retained UID, so deletion and
+recreation do not move old executions to a new resource.
 
-| Boundary | Current behavior | Required direction |
-| --- | --- | --- |
-| [ScheduledRun protobuf](../../proto/kagent/api/v1/scheduled_runs.proto) and [execution store](../../go/core/internal/database/scheduled_runs.go) | Schedule configuration is creator-owned PostgreSQL state | CRD configuration with retained durable execution machinery |
-| [Scheduler controller](../../go/core/internal/controller/scheduledrun/controller.go) | Uses an empty ControlPlaneSession | Explicit machine invocation principal and refreshable SA credential |
-| [Authentication types](../../go/core/pkg/auth/auth.go) and [runtime binding](../../go/core/internal/runtimeauth/provider.go) | Actor binding requires Session.creator and exposes it through User | Opaque principal ID, authenticated attributes, and independent runtime binding |
-| [Session service](../../go/core/internal/service/session/service.go) and [memory service](../../go/core/internal/service/memory/service.go) | Storage access and memory are coupled to user/creator fields | Principal-and-resource authorization and a stable data partition |
-| [Credential compiler](../../go/core/internal/translator/credentials.go) | Separate API-key, MCP header, and passthrough fields | Shared header types and canonical destination bindings |
-| [Gateway credential injection](credential-injection.md) | Passthrough support differs by harness; built-in injection uses placeholders | Verified invocation credential routing and supported harness behavior |
+Authorization treats configuration (`ScheduledRun`), execution
+(`ScheduledRunInvocation`), and history (`ScheduledRunHistory`) separately.
+Recorded namespace/name attributes continue to scope retained history after
+resource deletion. An authorized operator can read or continue an SA-created
+Session without assuming its creator identity. Session permissions remain
+required; listing filters permissions before pagination. Read-only shares retain
+their Session boundary and cannot invoke work. Shares remain managed by their
+recorded creator. Runtime Actors use only their verified Session binding.
 
-The proxy authenticator assumes a trusted upstream validation boundary; parsing
-its claims is not a new service-account verifier. Existing TokenReview use for
-protected controller metrics does not establish SA authentication for the public
-Agent invocation path.
+Checkpoints remain stored under the source Session's creator. Reading, listing,
+creating, and forking them requires source Session read access and schedule history
+permission, in addition to each checkpoint operation's permission. Renaming and
+removing scheduled checkpoints requires the corresponding schedule invocation
+permission. Retained execution provenance keeps those checks intact even after
+idle expiration removes the source Session. Ordinary checkpoints remain private
+to their owner. A fork belongs to its authenticated caller, with its own request
+identity, and does not inherit the source's scheduled-execution provenance.
+
+The scheduler's projected token audience is platform configuration. All schedules
+in one installation share that SA's downstream authority. This implementation
+adds neither a per-Agent token issuer nor a per-schedule service-account field.
 
 ## Alternatives superseded
 
@@ -407,20 +455,13 @@ selection, a generic credential-source CRD, a SPIFFE integration, or a custom to
 issuer. Additional mechanisms can be introduced when a concrete destination or
 isolation requirement needs them.
 
-## Details still to finalize
+## Compatibility and later extensions
 
-- Exact shared header schema, provider-specific header defaults, field
-  replacement/versioning, and compatibility scope.
-- SA token audience configuration, projected-token versus TokenRequest delivery,
-  validation ownership, and renewal behavior across controller restart.
-- Invocation credential binding through gateway injection, cached MCP sessions,
-  asynchronous work, continuation, suspension, and resume.
-- Provider normalization and identity-recreation semantics, memory partition,
-  and historical access after deletion. The creator field remains one principal ID.
-- Trusted resource attributes available to the authorizer and the default policy
-  for private versus scheduled Sessions; caller attributes alone do not define access.
-- CRD deletion/accepted-execution semantics, status fields, and configuration
-  synchronization guarantees.
-- Which concrete token-exchange and gateway extensions, if any, are necessary
-  for the first supported deployment. No proposed field should advertise an
-  unimplemented credential mechanism.
+This unreleased v1 API targets a clean installation. Schedule CRUD changes to Kubernetes
+resources. There is no migration of creator-owned schedules or persisted token
+state. The shared `headers` API supports only `valueFrom.secretKeyRef` and
+`valueFrom.tokenPassthrough`; literal values are outside this contract.
+
+Token exchange, separate scheduling identities, and UID-based memory partitions need their own concrete
+requirements and lifecycle contracts. They are not implicit behavior of token
+passthrough or the CRD.

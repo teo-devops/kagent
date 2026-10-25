@@ -134,7 +134,7 @@ func TestSessionExpirationRetainsCheckpointHistory(t *testing.T) {
 		require.ErrorIs(t, err, a2a.ErrTaskNotFound)
 	}
 	// A new fork after expiration reconstructs the retained conversation.
-	fork, created, err := store.ForkSession(t.Context(), checkpointID, source.Creator, uuid.NewString(), uuid.NewString())
+	fork, created, err := store.ForkSession(t.Context(), checkpointID, source.Creator, source.Creator, uuid.NewString(), uuid.NewString())
 	require.NoError(t, err)
 	require.True(t, created)
 	tasks, count, err := store.ListSessionTasks(t.Context(), fork.Id, "", "", nil, 100, nil)

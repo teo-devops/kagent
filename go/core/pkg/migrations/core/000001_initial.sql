@@ -271,17 +271,18 @@ CREATE UNIQUE INDEX session_task_event_message_idx
 CREATE TABLE scheduled_run (
     id UUID PRIMARY KEY,
     creator TEXT NOT NULL CHECK (creator <> ''),
-    request_id TEXT NOT NULL CHECK (char_length(request_id) BETWEEN 1 AND 128),
-    request_hash BYTEA NOT NULL CHECK (octet_length(request_hash) = 32),
+    namespace TEXT NOT NULL CHECK (namespace <> ''),
+    name TEXT NOT NULL CHECK (name <> ''),
+    generation BIGINT NOT NULL CHECK (generation > 0),
+    disabled BOOLEAN NOT NULL DEFAULT FALSE,
     data BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
     next_execution_time TIMESTAMPTZ,
     deleted_at TIMESTAMPTZ,
-    UNIQUE (creator, request_id),
-    CHECK (deleted_at IS NULL OR next_execution_time IS NULL)
+    CHECK ((deleted_at IS NULL AND NOT disabled) OR next_execution_time IS NULL)
 );
-CREATE INDEX scheduled_run_owner_idx ON scheduled_run (creator, id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX scheduled_run_active_name_idx ON scheduled_run (namespace, name) WHERE deleted_at IS NULL;
 CREATE INDEX scheduled_run_due_idx ON scheduled_run (next_execution_time, id)
     WHERE deleted_at IS NULL AND next_execution_time IS NOT NULL;
 
@@ -312,6 +313,8 @@ CREATE TABLE scheduled_run_execution (
     UNIQUE (scheduled_run_id, scheduled_time),
     UNIQUE (scheduled_run_id, manual_request_id)
 );
+CREATE UNIQUE INDEX scheduled_run_execution_session_idx ON scheduled_run_execution (session_id)
+    WHERE session_id IS NOT NULL;
 CREATE INDEX scheduled_run_execution_history_idx ON scheduled_run_execution (scheduled_run_id, id);
 CREATE INDEX scheduled_run_execution_pending_idx ON scheduled_run_execution (next_attempt_at, id)
     WHERE state IN ('SCHEDULED_RUN_EXECUTION_STATE_PENDING', 'SCHEDULED_RUN_EXECUTION_STATE_RUNNING');

@@ -119,7 +119,7 @@ cleanup. Session lifecycle workers independently pause/suspend idle Actors.
 The documents describe implemented behavior. Full cross-Session delegation
 and Dedicated agents remain deferred.
 
-## Decisions awaiting implementation
+## Design decisions
 
 - [ScheduledRun and caller identity](scheduled-runs-and-caller-identity.md):
   CRD schedule configuration, shared credential header configuration, and human or

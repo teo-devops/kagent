@@ -35,7 +35,7 @@ func TestModelCredentialDelivery(t *testing.T) {
 		origin := startCredentialMock(t, header, wantCredential)
 		model := harness.createModel(t, kube, reachableModelURL(t, origin), nil)
 		before := model.DeepCopy()
-		model.Spec.APIKeySecret, model.Spec.APIKeySecretKey = secret.Name, "token"
+		model.Spec.Headers = []v1alpha3.Header{{Name: "Authorization", Prefix: new("Bearer "), ValueFrom: v1alpha3.HeaderValueSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secret.Name}, Key: "token"}}}}
 		require.NoError(t, kube.Patch(t.Context(), model, ctrlclient.MergeFrom(before)))
 		template := &v1alpha3.AgentTemplate{
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "gateway-credentials-", Namespace: "kagent", Labels: harness.labels()},

@@ -1,15 +1,15 @@
 # ScheduledRun and caller identity: design decision
 
 Decision recorded: 2026-10-24. The principal and service-account authentication
-foundation is implemented. The shared authentication API and ScheduledRun CRD
-sections describe the remaining dependent changes.
+foundation and shared credential header API are implemented. The ScheduledRun CRD
+sections describe the remaining dependent change.
 
 ## Decision
 
 Move ScheduledRun configuration to a Kubernetes CRD while retaining durable
 execution state in PostgreSQL and task/history semantics in upstream A2A.
 
-Use one authentication configuration model on ModelConfig, RemoteMCPServer, and
+Use one credential header configuration model on ModelConfig, RemoteMCPServer, and
 EgressPolicy. Token passthrough propagates the authenticated invocation's
 credential, whether it represents a human or a machine. Scheduled invocations
 use kagent's service-account credential as their caller credential.
@@ -119,12 +119,12 @@ Human and service-account principals have no runtime binding. The Agent is
 resolved through the bound Session; there is no `Principal.Agent` field.
 `UpstreamAuth` receives its destination Session ID separately from the caller.
 
-## Why authentication stays with integrations
+## Why credential headers stay with integrations
 
 ModelConfig and RemoteMCPServer already identify a connection endpoint. Keeping
-authentication beside that endpoint avoids requiring authors to repeat its host
+credential headers beside that endpoint avoids requiring authors to repeat its host
 in an EgressPolicy. EgressPolicy continues to describe additional destinations
-and their authentication, including arbitrary outbound HTTP requests.
+and their credential headers, including arbitrary outbound HTTP requests.
 
 All three sources resolve into the same internal destination/header/credential
 binding and enforcement path. Integration destinations are derived from the
@@ -132,15 +132,15 @@ configured URL or resolved provider endpoint, using the existing origin rules.
 An additional EgressPolicy entry is not required to restate that integration.
 
 This means integration authors are trusted to configure the recipient and
-authentication together. If a deployment needs separate endpoint-authoring and
+credential headers together. If a deployment needs separate endpoint-authoring and
 credential-administration permissions, that is an additional authorization
 boundary; it is not a reason to require duplicated hosts in every deployment.
 
-## Proposed authentication shape
+## Shared header shape
 
-Use a shared authentication type with a bounded list of headers. Each header has
-exactly one typed source. The initial sources are a Secret reference and the
-invocation's bearer token:
+Use the same bounded `headers` list on each API. Every header requires a
+`valueFrom` with exactly one typed source: a Secret reference or the invocation's
+bearer token. Literal header values are outside this contract:
 
 ```yaml
 apiVersion: api.kagent.dev/v1alpha3
@@ -152,10 +152,10 @@ spec:
   description: Search support tickets.
   protocol: STREAMABLE_HTTP
   url: https://tickets.example.com/mcp
-  authentication:
-    headers:
-      - name: Authorization
-        prefix: "Bearer "
+  headers:
+    - name: Authorization
+      prefix: "Bearer "
+      valueFrom:
         tokenPassthrough: {}
 ---
 apiVersion: api.kagent.dev/v1alpha3
@@ -168,10 +168,10 @@ spec:
   model: support-chat
   openAI:
     baseUrl: https://models.example.com/v1
-  authentication:
-    headers:
-      - name: Authorization
-        prefix: "Bearer "
+  headers:
+    - name: Authorization
+      prefix: "Bearer "
+      valueFrom:
         secretKeyRef:
           name: model-access
           key: api-key
@@ -184,29 +184,32 @@ metadata:
 spec:
   destinations:
     - origin: https://issues.example.com
-      authentication:
-        headers:
-          - name: Authorization
-            prefix: "Bearer "
+      headers:
+        - name: Authorization
+          prefix: "Bearer "
+          valueFrom:
             tokenPassthrough: {}
 ```
 
 ModelConfig may also select tokenPassthrough; RemoteMCPServer and EgressPolicy may
 select Secrets. A header list preserves MCP integrations that need more than one
-credential header. Ordinary headers remain separate from credential sources.
+credential header. ModelConfig `defaultHeaders` remain separate from credential
+sources; RemoteMCPServer exposes only the shared credential header API.
 
-The proposed `tokenPassthrough: {}` selects the passthrough source without extra
+The `valueFrom.tokenPassthrough: {}` selects the passthrough source without extra
 parameters. Token passthrough supplies the bearer token value; prefix formats the
 outgoing header. It does not nest an incoming `Bearer` scheme inside another one.
 The source must come from authenticated invocation context, not an arbitrary
 header, unverified agent ID, CRD creator, or stored Session creator.
 
-Reject empty authentication blocks, missing or multiple sources, invalid or
+Reject explicitly empty header lists, missing or multiple sources, invalid or
 case-insensitively duplicate headers, and forbidden transport/routing headers.
 Reuse existing Secret-reference, origin, and header validation. Conflicting
 bindings for the same origin/header cannot both be effective; identical bindings
 can merge. The exact update/revocation behavior must preserve existing safe
 convergence rather than introduce an implicit credential override order.
+Integration and EgressPolicy passthrough both require a live source grant. A
+revision's expected headers do not preserve authority after that grant is removed.
 
 Gateway bindings are scoped by origin and header, not by MCP tool name or URL
 path. Different credentials for two clients at the same origin/header need a
@@ -344,7 +347,7 @@ adopt state from old UIDs.
 
 ## Runtime and credential boundary
 
-Compilation resolves the shared authentication configuration into explicit
+Compilation resolves the shared credential header configuration into explicit
 destination bindings. Credential acquisition and propagation use the verified
 invocation context. The gateway remains the preferred place to inject credentials
 without exposing values to guest runtimes. A common API must not imply that every
@@ -361,7 +364,7 @@ implementation decision.
 Current Substrate injection replaces a header only when the client supplies it.
 Existing placeholders can continue to satisfy that contract where supported.
 Adding or overwriting a missing policy-managed header requires a Substrate change;
-do not claim that behavior exists today. The shared authentication API alone does
+do not claim that behavior exists today. The shared credential header API alone does
 not solve invocation-scoped credential routing or token renewal.
 
 Authenticated tool discovery also needs an explicit caller context. A global
@@ -379,7 +382,7 @@ The following are current limitations, not implemented parts of this decision:
 | [Scheduler controller](../../go/core/internal/controller/scheduledrun/controller.go) | Uses an empty ControlPlaneSession | Explicit machine invocation principal and refreshable SA credential |
 | [Authentication types](../../go/core/pkg/auth/auth.go) and [runtime binding](../../go/core/internal/runtimeauth/provider.go) | Actor binding requires Session.creator and exposes it through User | Opaque principal ID, authenticated attributes, and independent runtime binding |
 | [Session service](../../go/core/internal/service/session/service.go) and [memory service](../../go/core/internal/service/memory/service.go) | Storage access and memory are coupled to user/creator fields | Principal-and-resource authorization and a stable data partition |
-| [Credential compiler](../../go/core/internal/translator/credentials.go) | Separate API-key, MCP header, and passthrough fields | Shared authentication types and canonical destination bindings |
+| [Credential compiler](../../go/core/internal/translator/credentials.go) | Separate API-key, MCP header, and passthrough fields | Shared header types and canonical destination bindings |
 | [Gateway credential injection](credential-injection.md) | Passthrough support differs by harness; built-in injection uses placeholders | Verified invocation credential routing and supported harness behavior |
 
 The proxy authenticator assumes a trusted upstream validation boundary; parsing
@@ -393,7 +396,7 @@ Agent invocation path.
 | --- | --- |
 | Reject scheduled targets that declare passthrough | Machines have tokens; validate credential availability and destination compatibility instead |
 | Replace passthrough with mandatory human userDelegation | Conflates the propagation mechanism with the principal type |
-| Require every integration's authentication to move to EgressPolicy | Duplicates endpoint configuration without being necessary for common enforcement |
+| Require every integration's credential headers to move to EgressPolicy | Duplicates endpoint configuration without being necessary for common enforcement |
 | Always present the target Agent's identity downstream | Passthrough intentionally presents the invocation caller, which may be a human or another machine |
 | Mint a distinct Agent token for every schedule | The scheduler's existing SA provides the selected initial caller identity |
 | Represent ownership as owner.user or owner.agent | A common principal ID and resource-aware policy express access without classifying owners as human or Agent |
@@ -406,7 +409,7 @@ isolation requirement needs them.
 
 ## Details still to finalize
 
-- Exact shared authentication schema, provider-specific header defaults, field
+- Exact shared header schema, provider-specific header defaults, field
   replacement/versioning, and compatibility scope.
 - SA token audience configuration, projected-token versus TokenRequest delivery,
   validation ownership, and renewal behavior across controller restart.

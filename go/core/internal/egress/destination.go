@@ -66,12 +66,12 @@ func ParseOrigin(raw string) (*url.URL, error) {
 type Access struct {
 	Destinations []string     `json:"destinations,omitempty"`
 	Credentials  []Credential `json:"credentials,omitempty"`
-	// TokenPassthroughTargets come from the revision; live grants never set them.
-	TokenPassthroughTargets []egresspolicy.GatewayTarget `json:"tokenPassthroughTargets,omitempty" db:"-"`
+	// TokenPassthroughTargets bind invocation credentials to destination headers.
+	TokenPassthroughTargets []egresspolicy.GatewayTarget `json:"tokenPassthroughTargets,omitempty"`
 }
 
 // CanonicalAccess merges equivalent origins and validates destinations,
-// credentials and tokenPassthrough targets. Credentials cannot use a target's origin.
+// credentials and tokenPassthrough targets. One origin/header has one source.
 func CanonicalAccess(destinations []string, credentials []Credential, targets []egresspolicy.GatewayTarget) (Access, error) {
 	result := Access{}
 	protocols := map[string]string{}
@@ -105,14 +105,17 @@ func CanonicalAccess(destinations []string, credentials []Credential, targets []
 	}
 	reserved := map[string]bool{}
 	for _, target := range result.TokenPassthroughTargets {
-		reserved[target.Origin] = true
+		if !allowed[target.Origin] {
+			return Access{}, fmt.Errorf("passthrough destination %q is not explicitly allowed", target.Origin)
+		}
+		reserved[target.Origin+"\x00"+target.Header] = true
 	}
 	for _, binding := range result.Credentials {
 		if !allowed[binding.Origin] {
 			return Access{}, fmt.Errorf("credential destination %q is not explicitly allowed", binding.Origin)
 		}
-		if reserved[binding.Origin] {
-			return Access{}, fmt.Errorf("destination %q cannot combine caller-token passthrough with gateway credentials", binding.Origin)
+		if reserved[binding.Origin+"\x00"+binding.Header] {
+			return Access{}, fmt.Errorf("destination %q cannot use two credential sources for the same header", binding.Origin)
 		}
 	}
 	return result, nil

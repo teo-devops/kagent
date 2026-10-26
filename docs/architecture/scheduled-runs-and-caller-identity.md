@@ -98,6 +98,10 @@ there is no automatic adoption of historical sessions under raw subject IDs.
 Insecure development mode retains caller-selected IDs and provides no identity
 assurance.
 
+`X-User-Id` forwarded to integrations also carries this opaque principal ID in
+authenticated modes. Consumers must not interpret it as a raw user ID. Insecure
+mode retains the caller-selected value.
+
 Kubernetes authentication uses TokenReview with `server.auth.serviceAccount.audience`.
 It maps the verified SA UID under the configured stable cluster `authority` into
 an opaque ID. Token rotation preserves the ID; deleting and recreating an SA
@@ -386,7 +390,8 @@ automatic redispatch.
 
 Live header policy is fetched separately through the Actor-authenticated,
 stateless `GET /runtime/egress` endpoint. It returns configuration and injection
-placeholders, never caller credentials. Secret injection remains at the Substrate gateway. Claude and Codex caller-token passthrough is unsupported;
+placeholders, never caller credentials. Secret and Actor-token injection remain
+at the Substrate gateway. Claude and Codex caller-token passthrough is unsupported;
 their compilers reject integration bindings that require it.
 
 See [credential injection](credential-injection.md) for transport requirements,
@@ -459,8 +464,10 @@ isolation requirement needs them.
 
 This unreleased v1 API targets a clean installation. Schedule CRUD changes to Kubernetes
 resources. There is no migration of creator-owned schedules or persisted token
-state. The shared `headers` API supports only `valueFrom.secretKeyRef` and
-`valueFrom.tokenPassthrough`; literal values are outside this contract.
+state. The shared `headers` API supports `valueFrom.secretKeyRef`,
+`valueFrom.tokenPassthrough`, and `valueFrom.actorToken`; literal values are
+outside this contract. Actor tokens identify the executing runtime independently
+of the scheduler or human caller and are minted by Substrate's gateway.
 
 Token exchange, separate scheduling identities, and UID-based memory partitions need their own concrete
 requirements and lifecycle contracts. They are not implicit behavior of token
